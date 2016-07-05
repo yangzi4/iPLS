@@ -1,0 +1,576 @@
+from numpy import *
+from sklearn.linear_model import LogisticRegression
+import matplotlib.pyplot as plt
+import csv
+import os
+ 
+def readfile(f_name, obs_row=0, data_start_row=2, data_col_start=2, cut_end=0):
+    "Reads file and extracts array (var & obs)."
+    f = open(f_name, "r")
+    reader = csv.reader(f, delimiter="\t")
+    variables = []
+    raw = []
+    for idx, row in enumerate(reader):
+        if idx == obs_row:
+            observations = [val for val in row[data_col_start:]]#val
+        if idx >= data_start_row:
+            variables.append(row[0])
+            raw.append(row[data_col_start:])
+    f.close()
+    if cut_end == 1:
+        data_mat = array(raw[:-1]).astype(float)#array(raw[:-1]).astype(float)
+        return [observations, variables[:-1], data_mat.T]#[:-1]
+    if cut_end == 0:
+        data_mat = array(raw).astype(float)#array(raw[:-1]).astype(float)
+        return [observations, variables, data_mat.T]#[:-1]
+ 
+def readfile_clin(f_name, obs_col, var_col):
+    "Reads file and extracts array (int-only)."
+    f = open(f_name, "r")
+    reader = csv.reader(f, delimiter="\t")
+    raw = []
+    obs = []
+    for idx, row in enumerate(reader):
+        if idx >= 1:
+            obs.append(obs_conv(row[obs_col]))
+            if row[var_col] == '': raw.append(nan)
+            else: raw.append(int(row[var_col]))
+    f.close()
+    return [obs, array(raw)]
+ 
+def readfile2(f_name, rs, col_ch):
+    "Reads array (strings)."
+    f = open(f_name, "r")
+    reader = csv.reader(f, delimiter="\t")
+    vals = []
+    for idx, row in enumerate(reader):
+        if idx in rs:
+            if type(col_ch) == int: vals.append(row[col_ch:])
+            if type(col_ch) == list: vals.append([row[i] for i in col_ch])
+    if len(vals) == 1: return vals[0]
+    else: return array(vals)
+ 
+def plot_hist(data, plot_title='', xlim_=0, first=0):
+    "Plots histograms."
+    K = len(data)
+    plt.figure()
+    for k in range(K):
+        plt.subplot(2, 2, k+1)
+        if first == 0: plt.hist(data[k].flatten(), 20)
+        else: plt.hist(data[k].flatten()[:first], 20)
+        if plot_title != '': plt.title(plot_title[k])
+        if xlim_ != 0: plt.xlim(xlim_[0], xlim_[1])
+    return
+ 
+def LR_analyze(Xs, Ys, test_XY=0):
+    "Runs logistic regression and gives output."
+    add_res = 0
+    X_f, Y_f = vstack(Xs), vstack(Ys)
+    lr = LogisticRegression()
+    random.seed(1)
+    LR_res = lr.fit(X_f, Y_f)
+    if test_XY == 0:
+        print auc_calc(LR_res.predict_proba(X_f)[:, 1:], Y_f)
+    elif type(test_XY[0]) == list:
+        add_res = auc_calc(LR_res.predict_proba(vstack(test_XY[0]))[:, 1:], vstack(test_XY[1]))
+        print round(add_res, 2)
+    else:
+        add_res = auc_calc(LR_res.predict_proba(test_XY[0])[:, 1:], test_XY[1])
+        print round(add_res, 2)
+    return LR_res, add_res
+ 
+def jPLS_analyze(Xs, Ys, params='CV', test_XY=0):
+    "Runs jPLS and gives output."
+    add_res = 0
+    X_f, Y_f = vstack(Xs), vstack(Ys)
+    if params == 'CV':
+        random.seed(1)
+        D_sel_j = PLS_CV(X_f, Y_f, D_list=range(1, 5), prob_t='classify', PLS_type='pred')
+        params = D_sel_j[0]
+        print 'jPLS params:', params
+    plsMth = PLSRegression(n_components=params)
+    random.seed(1)
+    jPLS_res = plsMth.fit(X_f, Y_f)
+    if test_XY == 0:
+        print auc_calc(jPLS_res.predict(X_f), Y_f)
+        print 'here'
+    elif type(test_XY[0]) == list:
+        print auc_calc(jPLS_res.predict(vstack(test_XY[0])), vstack(test_XY[1]))
+        print 'here'
+    else:
+        add_res = auc_calc(jPLS_res.predict(test_XY[0]), test_XY[1])
+        print round(add_res, 2)
+    return jPLS_res, add_res
+ 
+def sPLS_analyze(Xs, Ys, params='CV', test_XY=0):
+    "Runs sPLS and gives output."
+    add_res = 0
+    K = len(Xs)
+    if params == 'CV':
+        random.seed(1)
+        Ds_sel_s = [PLS_CV(Xs[k], Ys[k], D_list=range(1, 5), prob_t='classify',
+            PLS_type='pred') for k in range(K)]
+        params = [Ds_sel_s[k][0] for k in range(K)]
+        print 'sPLS params:', params
+    sPLS_res = []
+    for k in range(K):
+        plsMth = PLSRegression(n_components=params[k])
+        random.seed(1)
+        sPLS_res.append(plsMth.fit(Xs[k], Ys[k]))
+    if test_XY == 0:
+        print auc_calc(vstack([sPLS_res[k].predict(Xs[k]) for k in range(K)]), vstack(Ys))
+        print 'here'
+    elif type(test_XY[0]) == list:
+        add_res = gmean([auc_calc(sPLS_res[k].predict(test_XY[0][k]),
+            test_XY[1][k]) for k in range(len(test_XY[0]))])
+        print round(add_res, 2)
+        print 'here'
+    else:
+        print [auc_calc(mean([sPLS_res[k].predict(test_XY[0]) for k in range(K)], 0), test_XY[1]),
+            [auc_calc(sPLS_res[k].predict(test_XY[0]), test_XY[1]) for k in range(K)]]
+        add_res = auc_calc(mean([sPLS_res[k].predict(test_XY[0]) for k in range(K)], 0), test_XY[1])
+    return sPLS_res, add_res
+ 
+def iPLS_analyze(Xs, Ys, params='CV', test_XY=0):
+    "Runs iPLS and gives output."
+    add_res = 0
+    K = len(Xs)
+    L_range = [10**x for x in arange(-1.5, 1.5, 0.5)]
+    if params == 'CV':
+        random.seed(1)
+        D_sel_i, L_sel_i, DL_AUCs_i = iPLS_CV(Xs, Ys, D_list=range(1, 5),
+            L_list=L_range, prob_t='classify')
+        params = D_sel_i, L_sel_i
+        print 'iPLS params:', params, L_range[argmax(DL_AUCs_i[1, :])]
+    random.seed(1)
+    iPLS_res = iPLS_run(Xs, Ys, params[0], params[1])
+    if test_XY == 0:
+        print auc_calc(iPLS_pred(Xs, iPLS_res[0], iPLS_res[1], iPLS_res[2],
+            norm_params=iPLS_res[3]), vstack(Ys))
+        print 'here'
+    elif type(test_XY[0]) == list:
+        add_res = gmean([auc_calc(iPLS_pred(test_XY[0], iPLS_res[0], iPLS_res[1], iPLS_res[2],
+            separate=1, norm_params=iPLS_res[3])[k], test_XY[1][k]) for k in range(len(test_XY[0]))])
+        print round(add_res, 2)
+        print 'here'
+    else:
+        add_res = auc_calc(mean(iPLS_pred([test_XY[0]]*K, iPLS_res[0], iPLS_res[1], iPLS_res[2],
+            separate=1, norm_params=iPLS_res[3]), 0), test_XY[1])
+        print add_res
+    return iPLS_res, add_res
+ 
+ 
+## ___read___#addr1#
+data_path_STR = ""
+os.chdir(data_path_STR)
+pred_genes_STR = readfile2("GPL96-15653.txt", range(17, 22300), [0, 8, 10, 11])
+pred_data_STR = readfile("GSE2990_series_matrix.txt", 107, 108, 1, cut_end=1)
+pred_clin_STR = readfile2("GSE2990-clin.txt", range(1, 190), [0, 10, 9, 8, 2])
+print len(pred_data_STR[0]), len(pred_data_STR[1]), shape(pred_data_STR[2]), shape(pred_clin_STR)
+data_path_WNG = ""
+os.chdir(data_path_WNG)
+pred_genes_WNG = readfile2("GPL96-15653.txt", range(17, 22300), [0, 8, 10, 11])
+pred_data_WNG = readfile("GSE2034_series_matrix.txt", 54, 55, 1, cut_end=1)
+pred_clin_WNG = readfile2("GSE2034-clin.txt", range(8, 913), [1, 3, 4, 7])
+print len(pred_data_WNG[0]), len(pred_data_WNG[1]), shape(pred_data_WNG[2]), shape(pred_clin_WNG)
+data_path_IVS = ""
+os.chdir(data_path_IVS)
+pred_genes_IVS = readfile2("GPL96-15653.txt", range(17, 22300), [0, 8, 10, 11])
+pred_data_IVS = readfile("GSE4922-GPL96_series_matrix.txt", 97, 98, 1, cut_end=1)
+pred_clin_IVS = readfile2("GSE4922-clin_.txt", range(18, 307), [1, 8, 9, 13])
+print len(pred_data_IVS[0]), len(pred_data_IVS[1]), shape(pred_data_IVS[2]), shape(pred_clin_IVS)
+ 
+ 
+## ___process___
+## valid obs/var (common vars)
+non_missing_var_STR = where(all(isnan(pred_data_STR[2]) == 0, 0))[0]
+non_missing_var_WNG = where(all(isnan(pred_data_WNG[2]) == 0, 0))[0]
+non_missing_var_IVS = where(all(isnan(pred_data_IVS[2]) == 0, 0))[0]
+non_missing_obs_STR = where((pred_clin_STR[:, 1] != 'NA') * (pred_clin_STR[:, 3] != 'nan'))[0]
+non_missing_obs_WNG = where(pred_clin_WNG[:, 1] != 'NA')[0]
+non_missing_obs_IVS = where((pred_clin_IVS[:, 3] == 'ER+') + (pred_clin_IVS[:, 3] == 'ER-'))[0]
+obs_idcs_STR = [list(pred_data_STR[0]).index(sample) for sample in
+    list(pred_clin_STR[non_missing_obs_STR, 0].flatten())]
+obs_idcs_WNG = [list(pred_data_WNG[0]).index(sample) for sample in
+    list(pred_clin_WNG[non_missing_obs_WNG, 0].flatten())]
+obs_idcs_IVS = [list(pred_data_IVS[0]).index(sample) for sample in
+    list(pred_clin_IVS[non_missing_obs_IVS, 0].flatten())]
+obs_STR_1, obs_WNG_1, obs_IVS_1 = [list(array(pred_data_STR[0])[obs_idcs_STR]),
+    list(array(pred_data_WNG[0])[obs_idcs_WNG]), list(array(pred_data_IVS[0])[obs_idcs_IVS])]
+var_STR_1, var_WNG_1, var_IVS_1 = [list(pred_genes_STR[non_missing_var_STR, 2]),
+    list(pred_genes_WNG[non_missing_var_WNG, 2]),
+    list(pred_genes_IVS[non_missing_var_IVS, 2])]
+data_STR_1, data_WNG_1, data_IVS_1 = [pred_data_STR[2][obs_idcs_STR, :][:, non_missing_var_STR],
+    pred_data_WNG[2][obs_idcs_WNG, :][:, non_missing_var_WNG],
+    pred_data_IVS[2][obs_idcs_IVS, :][:, non_missing_var_IVS]]
+print [len(obj) for obj in [obs_STR_1, obs_WNG_1, obs_IVS_1]]
+print [len(obj) for obj in [var_STR_1, var_WNG_1, var_IVS_1]]
+print [shape(obj) for obj in [data_STR_1, data_WNG_1, data_IVS_1]]
+ 
+## transform (log2, RFS months)
+plot_hist([data_STR_1, data_WNG_1, data_IVS_1])
+data_STR_1_ = log2(exp(data_STR_1))
+data_WNG_1_ = log2(data_WNG_1)
+data_IVS_1_ = log2(exp(data_IVS_1))
+plot_hist([data_STR_1_, data_WNG_1_, data_IVS_1_])
+clin_STR = hstack([pred_clin_STR[non_missing_obs_STR, 1:2].astype(float)*12,
+    pred_clin_STR[non_missing_obs_STR, 2:3].astype(float),
+    pred_clin_STR[non_missing_obs_STR, 3:4].astype(float)])
+clin_WNG = hstack([pred_clin_WNG[non_missing_obs_WNG, 1:2].astype(float),
+    pred_clin_WNG[non_missing_obs_WNG, 2:3].astype(float),
+    pred_clin_WNG[non_missing_obs_WNG, 3:4].astype(float)])
+clin_IVS = hstack([pred_clin_IVS[non_missing_obs_IVS, 1:2].astype(float)*12,
+    pred_clin_IVS[non_missing_obs_IVS, 2:3].astype(float),
+    pred_clin_IVS[non_missing_obs_IVS, 3:4] == 'ER+'])
+ 
+## multiple copies (median)
+var_type = 2  ## 1-3
+unique_vars = list(set(pred_genes_STR[:, var_type]))
+var_idcs = [[argwhere(pred_genes_STR[:, var_type] == val)[i][0] for i in
+    range(shape(argwhere(pred_genes_STR[:, var_type] == val))[0])] for val in unique_vars]
+data_STR_2, data_WNG_2, data_IVS_2 = [], [], []
+for j in range(len(var_idcs)):
+    data_STR_2.append(median(hstack([data_STR_1_[:, i:(i+1)] for i in var_idcs[j]]),
+        1).reshape(len(obs_STR_1), 1))
+    data_WNG_2.append(median(hstack([data_WNG_1_[:, i:(i+1)] for i in var_idcs[j]]),
+        1).reshape(len(obs_WNG_1), 1))
+    data_IVS_2.append(median(hstack([data_IVS_1_[:, i:(i+1)] for i in var_idcs[j]]),
+        1).reshape(len(obs_IVS_1), 1))
+data_STR_2, data_WNG_2, data_IVS_2 = hstack(data_STR_2), hstack(data_WNG_2), hstack(data_IVS_2)
+print [len(obj) for obj in [obs_STR_1, obs_WNG_1, obs_IVS_1]]
+print len(unique_vars)
+print [shape(obj) for obj in [data_STR_2, data_WNG_2, data_IVS_2]]
+print [shape(obj) for obj in [clin_STR, clin_WNG, clin_IVS]]
+ 
+os.chdir("")#addr2#
+#save("obs_STR", obs_STR_1)
+#save("obs_WNG", obs_WNG_1)
+#save("obs_IVS", obs_IVS_1)
+#save("var_full", unique_vars)
+#save("data_STR", data_STR_2)
+#save("data_WNG", data_WNG_2)
+#save("data_IVS", data_IVS_2)
+#save("clin_STR", clin_STR)
+#save("clin_WNG", clin_WNG)
+#save("clin_IVS", clin_IVS)
+ 
+ 
+## ___filter___
+os.chdir("")
+obs_STR_1 = load("obs_STR.npy")
+obs_WNG_1 = load("obs_WNG.npy")
+obs_IVS_1 = load("obs_IVS.npy")
+unique_vars = load("var_full_preF.npy")
+data_STR_2 = load("data_STR_preF.npy")
+data_WNG_2 = load("data_WNG_preF.npy")
+data_IVS_2 = load("data_IVS_preF.npy")
+clin_STR = load("clin_STR.npy")
+clin_WNG = load("clin_WNG.npy")
+clin_IVS = load("clin_IVS.npy")
+ 
+def center_mat(mat, axis_=0):
+    "Centers mat by axis."
+    if axis_ == 0: return mat - mean(mat, 0).reshape(1, shape(mat)[1])
+    if axis_ == 1: return mat - mean(mat, 1).reshape(shape(mat)[0], 1)
+ 
+data_full_2 = vstack((data_STR_2, data_WNG_2, data_IVS_2))
+RFS_full = vstack((clin_STR[:, 1:2], clin_WNG[:, 1:2], clin_IVS[:, 1:2]))
+ 
+data_corrs = []
+vec1 = center_mat(RFS_full)
+for i in range(shape(data_full_2)[1]):
+    vec2 = center_mat(data_full_2[:, i:(i+1)])
+    data_corrs.append((vec1.T.dot(vec2)/sqrt((vec1.T.dot(vec1))*(vec2.T.dot(vec2))))[0][0])
+corr_argsort = argsort(abs(array(data_corrs)))[::-1]
+ 
+corr_thres = 600
+print data_corrs[corr_argsort[corr_thres]]
+data_STR_3, data_WNG_3, data_IVS_3 = [data_STR_2[:, corr_argsort[:corr_thres]],
+    data_WNG_2[:, corr_argsort[:corr_thres]], data_IVS_2[:, corr_argsort[:corr_thres]]]
+var_full_3 = unique_vars[corr_argsort[:corr_thres]]
+var_new = [gene for gene in vstack((genes_VTV[:70, :], genes_STR1[:16, :], genes_NDR[:70, :]))[:, 0]
+    if ((gene in unique_vars) * (gene not in unique_vars[corr_argsort[:corr_thres]]))]  ## 86 (none)
+idcs_new = hstack((corr_argsort[:corr_thres], array([argwhere(unique_vars == gene)[0][0]
+    for gene in var_new])))
+#data_STR_3, data_WNG_3, data_IVS_3 = [data_STR_2[:, idcs_new],
+#    data_WNG_2[:, idcs_new], data_IVS_2[:, idcs_new]]
+#var_full_3 = unique_vars[idcs_new]
+print [len(obj) for obj in [obs_STR_1, obs_WNG_1, obs_IVS_1]]
+print shape(var_full_3)
+print [shape(obj) for obj in [data_STR_3, data_WNG_3, data_IVS_3]]
+print [shape(obj) for obj in [clin_STR, clin_WNG, clin_IVS]]
+ 
+os.chdir("")#addr3#
+#os.chdir("")
+#savetxt("data_STR", data_STR_3)
+#savetxt("data_WNG", data_WNG_3)
+#savetxt("data_IVS", data_IVS_3)
+#save("var_full", var_full_3)
+ 
+ 
+## ___analyze___
+os.chdir("")
+#os.chdir("")
+data_STR = loadtxt("data_STR")  ## Sotiriou 2
+clin_STR = load("clin_STR.npy")
+data_WNG = loadtxt("data_WNG")  ## Wang
+clin_WNG = load("clin_WNG.npy")
+data_IVS = loadtxt("data_IVS")  ## Ivshina
+clin_IVS = load("clin_IVS.npy")
+ 
+#os.chdir("/ERp")
+##os.chdir("/ERp")
+#savetxt("data_STR", data_STR[argwhere(clin_STR[:, 2] == 1).T[0], :])
+#save("clin_STR", clin_STR[argwhere(clin_STR[:, 2] == 1).T[0], :])
+#savetxt("data_WNG", data_WNG[argwhere(clin_WNG[:, 2] == 1).T[0], :])
+#save("clin_WNG", clin_WNG[argwhere(clin_WNG[:, 2] == 1).T[0], :])
+#savetxt("data_IVS", data_IVS[argwhere(clin_IVS[:, 2] == 1).T[0], :])
+#save("clin_IVS", clin_IVS[argwhere(clin_IVS[:, 2] == 1).T[0], :])
+#os.chdir("/ERn")
+##os.chdir("/ERn")
+#savetxt("data_STR", data_STR[argwhere(clin_STR[:, 2] == 0).T[0], :])
+#save("clin_STR", clin_STR[argwhere(clin_STR[:, 2] == 0).T[0], :])
+#savetxt("data_WNG", data_WNG[argwhere(clin_WNG[:, 2] == 0).T[0], :])
+#save("clin_WNG", clin_WNG[argwhere(clin_WNG[:, 2] == 0).T[0], :])
+#savetxt("data_IVS", data_IVS[argwhere(clin_IVS[:, 2] == 0).T[0], :])
+#save("clin_IVS", clin_IVS[argwhere(clin_IVS[:, 2] == 0).T[0], :])
+ 
+## _____________________________________________________________________________
+ 
+import os
+os.chdir("/ERp")
+#os.chdir("/ERn")
+data_STR = loadtxt("data_STR")  ## Sotiriou 2
+clin_STR = load("clin_STR.npy")
+data_WNG = loadtxt("data_WNG")  ## Wang
+clin_WNG = load("clin_WNG.npy")
+data_IVS = loadtxt("data_IVS")  ## Ivshina
+clin_IVS = load("clin_IVS.npy")
+print [shape(obj) for obj in [data_STR, data_WNG, data_IVS]]
+print [shape(obj) for obj in [clin_STR, clin_WNG, clin_IVS]]
+ 
+Xs = [data_STR, data_WNG, data_IVS]
+Ys = [clin_STR[:, 1:2], clin_WNG[:, 1:2], clin_IVS[:, 1:2]]
+#Ys = [clin_STR[:, :1], clin_WNG[:, :1], clin_IVS[:, :1]]
+#Ys = [clin_STR[:, :1] > 24, clin_WNG[:, :1] > 24, clin_IVS[:, :1] > 24]
+ 
+## _____
+ 
+## training: 2 of Sotiriou, Wang, Ivshina; testing: remainder
+for k_ in range(3):
+    perm = [[0, 1, 2], [0, 2, 1], [1, 2, 0]][k_]
+    Xs_, Ys_ = [Xs[perm[k]] for k in range(3)], [Ys[perm[k]] for k in range(3)]
+    res_s = sPLS_analyze(Xs_[:2], Ys_[:2], 'CV', [Xs_[2], Ys_[2]])
+    res_j = jPLS_analyze(Xs_[:2], Ys_[:2], 'CV', [Xs_[2], Ys_[2]])
+    res_i = iPLS_analyze(Xs_[:2], Ys_[:2], 'CV', [Xs_[2], Ys_[2]])
+    res_lr = LR_analyze(Xs_[:2], Ys_[:2], [Xs_[2], Ys_[2]])
+ 
+# training: 50% of Sotiriou 2, Wang, Ivshina; testing: 50% of same
+p10 = [int(ceil(shape(Xs[k])[0]*0.5)) for k in range(3)]
+AUCs_ = []
+for i in range(1, 51):
+    random.seed(i)
+    print '        ', i
+    rand = [random.permutation(range(shape(Xs[k])[0])) for k in range(3)]
+    Xs_90p, Ys_90p = [Xs[k][rand[k], :][:-p10[k], :] for k in range(3)], [Ys[k][rand[k], :][:-p10[k], :] for k in range(3)]
+    Xs_10p, Ys_10p = [Xs[k][rand[k], :][-p10[k]:, :] for k in range(3)], [Ys[k][rand[k], :][-p10[k]:, :] for k in range(3)]
+    res_s = sPLS_analyze(Xs_90p, Ys_90p, 'CV', [vstack(Xs_10p), vstack(Ys_10p)])
+    res_j = jPLS_analyze(Xs_90p, Ys_90p, 'CV', [vstack(Xs_10p), vstack(Ys_10p)])
+    res_i = iPLS_analyze(Xs_90p, Ys_90p, 'CV', [vstack(Xs_10p), vstack(Ys_10p)])
+    res_lr = LR_analyze(Xs_90p, Ys_90p, [Xs_10p, Ys_10p])
+    AUCs_.append([res_s[1], res_i[1], res_j[1], res_lr[1]])
+AUCs_array = array(AUCs_)
+#os.chdir("/ERp")#addr4#
+#os.chdir("/ERn")
+#AUCs_array = load("SWI-ERp_050-AUCs.npy")
+#AUCs_array = load("SWI-ERn_050-AUCs.npy")
+print mean(AUCs_array, 0)
+print std(AUCs_array, 0)
+print std(AUCs_array, 0)/sqrt(shape(AUCs_array)[0])
+#save("SWI-ERp_050-AUCs_", AUCs_array)
+#save("SWI-ERn_050-AUCs_", AUCs_array)
+ 
+## ___inference___
+os.chdir("")
+var_full = load("var_full.npy")
+data_path_STR = ""
+os.chdir(data_path_STR)
+annot_genes_STR = readfile2("GPL96-15653.txt", range(17, 22300), [0, 8, 10, 11, 13, 14, 15])
+#os.chdir("")
+#savetxt("gene annot", annot_genes_STR, fmt="%s")
+ 
+print shape(annot_genes_STR)  ## ID, representative public ID; gene symbol, Entrez Gene ID, GO biological process, GO cellular component, GO molecular function
+gene_mat = zeros((0, 4))
+for gene in var_full:
+    if gene == '' or gene not in annot_genes_STR[:, 2]:
+        gene_mat = vstack((gene_mat, array([['']*4])))
+    else:
+        gene_mat = vstack((gene_mat, annot_genes_STR[:, 3:][argwhere(annot_genes_STR[:, 2] == gene)[0][0], :]))
+print shape(gene_mat)
+ 
+os.chdir("")
+#save("gene_annot_mat", gene_mat)
+gene_mat = load("gene_annot_mat.npy")
+ 
+## training: 2 of Sotiriou, Wang, Ivshina; testing: remainder (ERp)
+for k_ in [1]:
+    perm = [[0, 1, 2], [0, 2, 1], [1, 2, 0]][k_]
+    Xs_, Ys_ = [Xs[perm[k]] for k in range(3)], [Ys[perm[k]] for k in range(3)]
+    res_s = sPLS_analyze(Xs_[:2], Ys_[:2], [2, 4], [Xs_[2], Ys_[2]])
+    res_j = jPLS_analyze(Xs_[:2], Ys_[:2], 3, [Xs_[2], Ys_[2]])
+    res_i = iPLS_analyze(Xs_[:2], Ys_[:2], [1, 10**1], [Xs_[2], Ys_[2]])
+dr_genes_s, cr_genes_s = intg_rankings([res_s[0][k].x_weights_ for k in range(2)], 600)
+dr_genes_j, cr_genes_j = intg_rankings([res_j[0].x_weights_]*2, 600)
+dr_genes_i, cr_genes_i = intg_rankings([res_i[0][0][k] for k in range(2)], 600)
+sort_s, sort_d_s = [where(cr_genes_s[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_s[k] == v)[0][0] for v in range(600)] for k in range(2)]
+sort_j, sort_d_j = [where(cr_genes_j[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_j[k] == v)[0][0] for v in range(600)] for k in range(2)]
+sort_i, sort_d_i = [where(cr_genes_i[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_i[k] == v)[0][0] for v in range(600)] for k in range(2)]
+savetxt("cr_genes_s (ERp).txt", hstack((vstack((array(var_full),
+    array(sort_s) + 1, array(sort_d_s[0]) + 1, array(sort_d_s[1]) + 1)).T,
+    vstack([res_s[0][k].x_weights_[:, 0] for k in range(2)]).T, gene_mat))[dr_genes_s[0], :], fmt="%s", delimiter='\t')
+savetxt("cr_genes_j (ERp).txt", hstack((vstack((array(var_full),
+    array(sort_j) + 1, array(sort_d_j[0]) + 1, array(sort_d_j[1]) + 1)).T,
+    vstack([res_j[0].x_weights_[:, 0]]*2).T, gene_mat))[cr_genes_j[0], :], fmt="%s", delimiter='\t')
+savetxt("cr_genes_i (ERp).txt", hstack((vstack((array(var_full),
+    array(sort_i) + 1, array(sort_d_i[0]) + 1, array(sort_d_i[1]) + 1)).T,
+    vstack([res_i[0][0][k][:, 0] for k in range(2)]).T, gene_mat))[cr_genes_i[0], :], fmt="%s", delimiter='\t')
+ 
+## training: 2 of Sotiriou, Wang, Ivshina; testing: remainder (ERn)
+for k_ in [2]:
+    perm = [[0, 1, 2], [0, 2, 1], [1, 2, 0]][k_]
+    Xs_, Ys_ = [Xs[perm[k]] for k in range(3)], [Ys[perm[k]] for k in range(3)]
+    res_s = sPLS_analyze(Xs_[:2], Ys_[:2], [4, 4], [Xs_[2], Ys_[2]])
+    res_j = jPLS_analyze(Xs_[:2], Ys_[:2], 3, [Xs_[2], Ys_[2]])
+    res_i = iPLS_analyze(Xs_[:2], Ys_[:2], [2, 10**-0.5], [Xs_[2], Ys_[2]])
+dr_genes_s, cr_genes_s = intg_rankings([res_s[0][k].x_weights_ for k in range(2)], 600)
+dr_genes_j, cr_genes_j = intg_rankings([res_j[0].x_weights_]*2, 600)
+dr_genes_i, cr_genes_i = intg_rankings([res_i[0][0][k] for k in range(2)], 600)
+sort_s, sort_d_s = [where(cr_genes_s[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_s[k] == v)[0][0] for v in range(600)] for k in range(2)]
+sort_j, sort_d_j = [where(cr_genes_j[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_j[k] == v)[0][0] for v in range(600)] for k in range(2)]
+sort_i, sort_d_i = [where(cr_genes_i[0] == v)[0][0] for v in range(600)], [
+    [where(dr_genes_i[k] == v)[0][0] for v in range(600)] for k in range(2)]
+savetxt("cr_genes_s (ERn).txt", hstack((vstack((array(var_full),
+    array(sort_s) + 1, array(sort_d_s[0]) + 1, array(sort_d_s[1]) + 1)).T,
+    vstack([res_s[0][k].x_weights_[:, 0] for k in range(2)]).T, gene_mat))[dr_genes_s[0], :], fmt="%s", delimiter='\t')
+savetxt("cr_genes_j (ERn).txt", hstack((vstack((array(var_full),
+    array(sort_j) + 1, array(sort_d_j[0]) + 1, array(sort_d_j[1]) + 1)).T,
+    vstack([res_j[0].x_weights_[:, 0]]*2).T, gene_mat))[cr_genes_j[0], :], fmt="%s", delimiter='\t')
+savetxt("cr_genes_i (ERn).txt", hstack((vstack((array(var_full),
+    array(sort_i) + 1, array(sort_d_i[0]) + 1, array(sort_d_i[1]) + 1)).T,
+    vstack([res_i[0][0][k][:, 0] for k in range(2)]).T, gene_mat))[cr_genes_i[0], :], fmt="%s", delimiter='\t')
+ 
+ 
+## ___concordance___
+os.chdir("/ERp")#addr5#
+genes_s_p = readfile2("cr_genes_s (ERp).txt", range(600), [0, 1])
+genes_j_p = readfile2("cr_genes_j (ERp).txt", range(600), [0, 1])
+genes_i_p = readfile2("cr_genes_i (ERp).txt", range(600), [0, 1])
+os.chdir("/ERn")
+genes_s_n = readfile2("cr_genes_s (ERn).txt", range(278), [0, 1])
+genes_j_n = readfile2("cr_genes_j (ERn).txt", range(278), [0, 1])
+genes_i_n = readfile2("cr_genes_i (ERn).txt", range(278), [0, 1])
+int3_genes = [[genes_s_n, genes_j_n, genes_i_n], [genes_s_p, genes_j_p, genes_i_p]]
+os.chdir("")
+genes_VTV = readfile2("prognostic signature VTV.txt", range(1, 232), [2])  ## 70 (231)
+os.chdir("")
+genes_STR1 = readfile2("prognostic signature STR1.txt", range(3, 488), [9])  ## 16 (485)
+os.chdir("")
+genes_NDR = readfile2("prognostic signature NDR.txt", range(7, 207), [0])  ## 70 (200)
+os.chdir("")
+genes_FNK1 = readfile2("prognostic signature FNK1.txt", range(2, 166), [0])
+genes_FNK2 = readfile2("prognostic signature FNK2.txt", range(2, 166), [1])
+genes_FNK3 = readfile2("prognostic signature FNK3.txt", range(2, 111), [0])
+vld_genes = [genes_VTV, genes_STR1, genes_NDR, genes_FNK1, genes_FNK2, genes_FNK3]
+ 
+def compare_signatures(sgnt1, sgnt2):
+    "Compares signatures (lists)."
+    common = [gene for gene in sgnt1 if gene in sgnt2]
+    mat = []
+    for gene in common:
+        mat.append([gene, sgnt1.index(gene), sgnt2.index(gene)])
+    return array(mat)
+ 
+thres1 = [70, 16, 70, 100, 100, 100]
+thres2 = [231, 485, 200, 100, 100, 100]
+thres1_ = [70, 16, 70, 100, 100, 100]
+thres2_ = [200, 200, 200, 100, 100, 100]
+for vld_num in [0, 1, 2]:
+    print 'vs.', ['VTV', 'STR1', 'NDR', 'IVS1', 'IVS2', 'IVS3'][vld_num]
+    for er_ in range(2):
+        print '  ', ['ER-', 'ER+'][er_], 'sPLS/jPLS/iPLS'
+        for pls_type_ in range(3):
+            #print ['sPLS', 'jPLS', 'iPLS'][pls_type_]
+            print_res = compare_signatures(list(int3_genes[er_][pls_type_][:thres1_[vld_num], 0]),
+                list(vld_genes[vld_num][:thres1[vld_num]]))
+            print shape(print_res)
+            print print_res
+            #print compare_signatures(list(vld_genes[vld_num][:thres2[vld_num]]),
+            #    list(int3_genes[er_][pls_type_][:thres2_[vld_num], 0]))
+    print ''
+ 
+## _____
+ 
+def get_GO_annot(gene_mat_, rows, GO_, annots_=0):
+    """Retrieves GO annotation (GO_ = 0/1/2: biological process,
+    cellular component, molecular function)."""
+    annots = []
+    for row in rows:
+        annot_str = gene_mat_[row, GO_ + 7]
+        if len(annot_str) > 7: GO_fs = [annot_str[11:annot_str.find(' // ', 9)]]
+        else: GO_fs = []
+        find_ = annot_str.find(' /// ')
+        while find_ != -1:
+            GO_fs.append(annot_str[(find_ + 16):(annot_str.find(' // ', find_ + 16))])
+            find_ = annot_str.find(' /// ', find_ + 1)
+        annots.append(list(set(GO_fs)))
+    if annots_ == 0:
+        print annots
+        return
+    else:
+        for annot_ in annots_:
+            gene_list = []
+            for i,row in enumerate(rows):
+                if annot_ in annots[i]: gene_list.append(gene_mat_[row, 0])
+            print annot_, ':', gene_list
+        return
+ 
+os.chdir("/ERp")#addr6#
+genes_s_p_ = readfile2("cr_genes_s (ERp).txt", range(600), range(8))
+genes_j_p_ = readfile2("cr_genes_j (ERp).txt", range(600), range(8))
+genes_i_p_ = readfile2("cr_genes_i (ERp).txt", range(600), range(8))
+os.chdir("/ERn")
+genes_s_n_ = readfile2("cr_genes_s (ERn).txt", range(600), range(8))
+genes_j_n_ = readfile2("cr_genes_j (ERn).txt", range(600), range(8))
+genes_i_n_ = readfile2("cr_genes_i (ERn).txt", range(600), range(8))
+GO_biological_processes = ['cell cycle', 'cell differentiation', 'cell proliferation',
+    'regulation of cell cycle', 'mitosis', 'mitotic cell cycle checkpoint', 'mitotic cell cycle',
+    'DNA replication', 'response to DNA damage stimulus', 'DNA repair',
+    'anti-apoptosis', 'positive regulation of apoptosis', 'growth', 'cell cycle arrest', 'apoptosis'
+]
+ant_thres = 20
+#get_GO_annot(genes_s_p_, range(ant_thres), 0)
+print GO_biological_processes
+print ''
+print '__ER+, sPLS'
+get_GO_annot(genes_s_p_, range(ant_thres), 0, GO_biological_processes)
+print ''
+print '__ER+, jPLS'
+get_GO_annot(genes_j_p_, range(ant_thres), 0, GO_biological_processes)
+print ''
+print '__ER+, iPLS'
+get_GO_annot(genes_i_p_, range(ant_thres), 0, GO_biological_processes)
+print ''
+print '__ER-, sPLS'
+get_GO_annot(genes_s_n_, range(ant_thres), 0, GO_biological_processes)
+print ''
+print '__ER-, jPLS'
+get_GO_annot(genes_j_n_, range(ant_thres), 0, GO_biological_processes)
+print ''
+print '__ER-, iPLS'
+get_GO_annot(genes_i_n_, range(ant_thres), 0, GO_biological_processes)
+
