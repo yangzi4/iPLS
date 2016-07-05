@@ -12,6 +12,6 @@ clin_IVS/STR/WNG_ERp/ERn: (.npy) post-processed datasets for clinical variables 
 
 data_IVS/STR/WNG_ERp/ERn: (text file) post-processed datasets for gene expression (IVS/STR/WNG: cohorts, ERp/ERn: ER-positive/negative)
 
-: post-processed (filtered) variables
+var_full: (.npy) post-processed (filtered) variables
 
-obs: (.npy) observations
+obs_IVS/STR/WNG: (.npy) observations (IVS/STR/WNG: cohorts)
