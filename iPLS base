@@ -1,0 +1,317 @@
+from numpy import *
+from scipy.linalg import pinv2
+from sklearn.cross_decomposition import PLSCanonical, PLSRegression
+from sklearn.metrics import roc_curve, auc
+from scipy.stats.mstats import gmean
+from scipy.stats import rankdata
+ 
+## ___algorithm:___
+def iPLS_obj_eval(XTYs, ws, vs, L, verbose=0):
+    """Objective function of integrative PLS (inner loop)."""
+    K = len(XTYs)
+    p, q = shape(XTYs[0])
+    w0 = mean(hstack(ws), 1).reshape(p, 1)
+    obj1, obj2 = 0, 0
+    for k in range(K):
+        obj1 += ws[k].T.dot(XTYs[k]).dot(vs[k])
+        obj2 += -w0.T.dot(w0)
+    if verbose == 1: print "OVs: ", obj1[0][0], obj2[0][0]
+    return p*q*L*obj2[0][0] - obj1[0][0]
+ 
+def vec_norm(vec):
+    "Support function for 'iPLS_inner'."
+    return vec/linalg.norm(vec)
+ 
+def iPLS_inner(Xs, Ys, L, steps, verbose, nrep=1):
+    """Inner loop of integrative PLS."""
+    K = len(Xs)
+    p, q = shape(Xs[0])[1], shape(Ys[0])[1]
+    ws_f = [zeros((p, 1)) for k in range(K)]
+    vs_f = [zeros((q, 1)) for k in range(K)]
+    XTYs = [Xs[k].T.dot(Ys[k]) for k in range(K)]
+     
+    obj_vals = []
+    n_iter = []
+    for rep in range(nrep):
+        vs_ = [random.normal(0, 1, (q, 1)) for k in range(K)]
+        vs = [vec_norm(vs_[k])*sign(vs_[k].T.dot(vs_[0])) for k in range(K)]
+        ws = [vec_norm(XTYs[k].dot(vs[k])) for k in range(K)]
+        vs = [vec_norm(XTYs[k].T.dot(ws[k])) for k in range(K)]
+        start_eval = 0
+        old_eval = inf
+        new_eval = 0
+        count = 0
+        while (abs(old_eval - new_eval) > abs(start_eval - new_eval)*1e-2
+            ) and (count <= 5e1):
+            ws = [vec_norm(XTYs[k].dot(vs[k]) + 2*p*q*L*(sum(ws, 0) - ws[k])/K**2)
+                for k in range(K)]
+            vs = [vec_norm(XTYs[k].T.dot(ws[k])) for k in range(K)]
+             
+            if count == 0:
+                new_eval = iPLS_obj_eval(XTYs, ws, vs, L, verbose)
+                start_eval = new_eval
+            if count != 0 and count % steps == 0:  ## count > thres, != 0
+                old_eval = new_eval
+                new_eval = iPLS_obj_eval(XTYs, ws, vs, L, verbose)
+            if verbose == 1: print count, ':', new_eval, old_eval, start_eval
+            count += 1
+        obj_vals.append(new_eval)
+        n_iter.append(count)
+        #print rep, new_eval, count
+        if obj_vals[-1] == min(obj_vals):
+            ws_f = ws
+            vs_f = vs
+    return ws_f, vs_f
+ 
+def iPLS_run(Xs, Ys, D, L, steps=1, verbose=0):
+    """Integrative PLS."""
+    K = len(Xs)
+    p, q = shape(Xs[0])[1], shape(Ys[0])[1]
+    X_ms, Y_ms, X_sds, Y_sds = ([mean(Xs[k], 0) for k in range(K)],
+        [mean(Ys[k], 0) for k in range(K)], [std(Xs[k], 0, ddof=1) for k in range(K)],
+        [std(Ys[k], 0, ddof=1) for k in range(K)])
+    Xs_ = [(Xs[k] - X_ms[k])/X_sds[k] for k in range(K)]
+    Ys_ = [(Ys[k] - Y_ms[k])/Y_sds[k] for k in range(K)]
+     
+    ws_f, vs_f = [zeros((p, 0)) for k in range(K)], [zeros((q, 0)) for k in range(K)]
+    Xl_f, Yl_f = [zeros((p, 0)) for k in range(K)], [zeros((q, 0)) for k in range(K)]
+    for d in range(D):
+        if verbose == 1: print 'iteration: ', d
+        ws_opt, vs_opt = iPLS_inner(Xs_, Ys_, L, steps, verbose)  ## weights
+        Xws = [Xs[k].dot(ws_opt[k]) for k in range(K)]  ## x scores
+        #Yvs = [Ys_[k].dot(vs_opt[k]) for k in range(K)]  ## y scores
+        Xl_s = [(Xs_[k].T.dot(Xws[k]))/(Xws[k].T.dot(Xws[k]))[0, 0] for k in range(K)]  ## x loadings
+        Yl_s = [(Ys_[k].T.dot(Xws[k]))/(Xws[k].T.dot(Xws[k]))[0, 0] for k in range(K)]  ## y loadings
+        Xs_ = [Xs_[k] - Xws[k].dot(Xl_s[k].T) for k in range(K)]  ## XwwTXT/wTXTXw X
+        Ys_ = [Ys_[k] - Xws[k].dot(Yl_s[k].T) for k in range(K)]
+        for k in range(K):
+            direction = sign(ones((1, q)).dot(vs_opt[k]))[0, 0]
+            ws_f[k] = hstack((ws_f[k], ws_opt[k]*direction))
+            vs_f[k] = hstack((vs_f[k], vs_opt[k]*direction))
+            Xl_f[k] = hstack((Xl_f[k], Xl_s[k]*direction))
+            Yl_f[k] = hstack((Yl_f[k], Yl_s[k]*direction))
+    Xrtns = [ws_f[k].dot(pinv2(Xl_f[k].T.dot(ws_f[k]))) for k in range(K)]  ## w pinv(wTXTXw)
+    coefs = [Xrtns[k].dot(Yl_f[k].T) for k in range(K)]  ## w pinv(wTXTXw) (wTXTY / wTXTXw)
+    coefs = [1./X_sds[k].reshape(p, 1) * coefs[k] * Y_sds[k] for k in range(K)]
+    if verbose == 1: print "done"
+    return [ws_f, vs_f, coefs, (X_ms, Y_ms, X_sds, Y_sds)]#Xws_normTYs_f
+ 
+def iPLS_pred(Xs, ws, vs, coefs, separate=0, norm_params=0):
+    """Evaluates prediction for iPLS."""
+    K = len(Xs)
+    #X_ms_, X_sd_ = [mean(Xs[k], 0) for k in range(K)], std(vstack(Xs), 0, ddof=1)
+    #Xs_ = [(Xs[k] - X_ms_[k])/X_sd_ for k in range(K)]
+    X_ms_, Y_ms_, X_sd_, Y_sd_ = norm_params
+    Xs_ = [(Xs[k] - X_ms_[k])/X_sd_[k] for k in range(K)]
+    ests = [(Xs_[k].dot(coefs[k])) + Y_ms_[k] for k in range(K)]  ## q=1 only
+    if separate == 0: return vstack(ests)
+    else: return ests
+ 
+ 
+## ___cross validation:___
+def iPLS_CV(Xs, Ys, prop=0.1, D_list=range(1, 5), L_list=[10**x for x in
+    arange(-1.5, 1.5, 0.5)], prob_t='classify', n_trials=100):
+    """Performs cross validation for iPLS."""
+    K = len(Xs)
+    N_D, N_L = len(D_list), len(L_list)
+    Ns = [shape(Xs[k])[0] for k in range(K)]
+    DL_lists = [[[] for L in range(N_L)] for D in range(N_D)]
+    for trial in range(n_trials):
+        test_idcs = [random.choice(range(Ns[k]), ceil(prop*Ns[k]), False) for k in range(K)]
+        train_idcs = [[x for x in range(Ns[k]) if x not in test_idcs[k]] for k in range(K)]
+        train_data = [Xs[k][train_idcs[k], :] for k in range(K)], [Ys[k][train_idcs[k], :]
+            for k in range(K)]
+        test_data = [Xs[k][test_idcs[k], :] for k in range(K)], [Ys[k][test_idcs[k], :]
+            for k in range(K)]
+        for d in range(N_D):
+            for l in range(N_L):
+                tr_res = iPLS_run(train_data[0], train_data[1], D_list[d], L_list[l])
+                if prob_t == 'classify':
+                    DL_lists[d][l].append(auc_calc(iPLS_pred(test_data[0], tr_res[0], tr_res[1],
+                        tr_res[2], norm_params=tr_res[3]), vstack(test_data[1])))
+                if prob_t == 'predict':
+                    DL_lists[d][l].append(linalg.norm(iPLS_pred(test_data[0], tr_res[0], tr_res[1],
+                        tr_res[2], norm_params=tr_res[3]) - vstack(test_data[1]))**2)
+    mean_arrays = zeros((N_D, N_L))
+    sd_arrays = zeros((N_D, N_L))
+    for d in range(N_D):
+        for l in range(N_L):
+            mean_arrays[d, l] = nanmean(DL_lists[d][l])
+            sd_arrays[d, l] = nanstd(DL_lists[d][l])
+    if prob_t == 'classify': indices = argwhere(mean_arrays == amax(mean_arrays))
+    if prob_t == 'predict': indices = argwhere(mean_arrays == amin(mean_arrays))
+    #print mean_arrays
+    #print sd_arrays/sqrt(n_trials)
+    return [D_list[indices[0][0]], L_list[indices[0][1]], mean_arrays]
+ 
+def PLS_CV(X, Y, prop=0.1, D_list=range(1, 5), prob_t='classify', PLS_type='pred', n_trials=100):
+    """Performs cross validation for PLS."""
+    N = shape(X)[0]
+    N_D = len(D_list)
+    D_AUC_list = [[] for D in range(N_D)]
+    for trial in range(n_trials):
+        test_idx = random.choice(range(N), ceil(prop*N), False)
+        train_idx = [x for x in range(N) if x not in test_idx]
+        train_data = X[train_idx, :], Y[train_idx, :]
+        test_data = X[test_idx, :], Y[test_idx, :]
+        for d in range(N_D):
+            if PLS_type == 'pred': plsMth = PLSRegression(n_components=D_list[d])
+            if PLS_type == 'infr': plsMth = PLSCanonical(n_components=D_list[d])
+            tr_res = plsMth.fit(train_data[0], train_data[1])
+            if prob_t == 'classify':
+                D_AUC_list[d].append(auc_calc(tr_res.predict(test_data[0]), test_data[1]))
+            if prob_t == 'predict':
+                D_AUC_list[d].append(linalg.norm(tr_res.predict(test_data[0]) - test_data[1])**2)
+    mean_list = []
+    sd_list = []
+    for d in range(N_D):
+        mean_list.append(nanmean(D_AUC_list[d]))
+        sd_list.append(nanstd(D_AUC_list[d]))
+    #print mean_list
+    #print sd_list/sqrt(n_trials)
+    if prob_t == 'classify': idx = argmax(mean_list)
+    if prob_t == 'predict': idx = argmin(mean_list)
+    return [D_list[idx], mean_list]
+ 
+ 
+## ___data generation:___
+def sup_data_gen(Xs_dim, q, Bs_main, sigma=0, Bs_tr='none', Bs1=0, link='identity'):
+    "Data generation for multi-block supervised problems (Ys ~ Xs)."
+    K = len(Xs_dim)
+    Ns = [Xs_dim[k][0] for k in range(K)]
+    M = Xs_dim[0][1]
+    sigma = max(sigma, 0.01)
+     
+    Xs = [random.normal(0, 1, (Ns[k], M)) for k in range(K)]
+    Bs = [zeros((M, q)) for k in range(K)]
+     
+    grp_idcs = [[] for k in range(K)]
+    for grp_idx in range(1, 2**K)[::-1]:
+        base2 = [grp_idx / 2**k % 2 for k in range(K)[::-1]]
+        grp_idcs[sum(base2)-1].append(base2)
+    Bs_idcs = [[] for k in range(K)]
+    pos = 0
+    for k in range(K)[::-1]:
+        for grp in range(len(Bs_main[k])):
+            Bs_idcs[k].append([])
+            for v in range(Bs_main[k][grp]):  ## each variable
+                for k_ in range(K):
+                    if grp_idcs[k][grp][k_] == 1:
+                        for q_ in range(q): Bs[k_][pos, q_] = random.normal(0, 1)
+                Bs_idcs[k][grp].append(pos)
+                pos += 1
+     
+    if Bs1 == 1:
+        Bs = [(Bs[k] != 0) for k in range(K)]
+    if Bs1 == -1:
+        sgns = (-1)**random.binomial(1, 0.5, shape(Bs[0]))
+        Bs = [(Bs[k] != 0)*sgns for k in range(K)]
+    if Bs_tr != 'none': Bs = Bs_tr
+    if link == 'identity':
+        Ys = [Xs[k].dot(Bs[k]) + random.normal(0, sigma, (Ns[k], 1)) >= 0 for k in range(K)]
+    #if link == 'logit':
+    #    probs = [1/(1 + exp(Xs[k].dot(Bs[k]) + random.normal(0, sigma, (Ns[k], 1))
+    #        )) for k in range(K)]
+    #    Ys = [array([random.binomial(1, probs[k][n, 0]) for n in range(Ns[k])]
+    #        ).reshape(Ns[k], 1) for k in range(K)]
+    #if link == 'log':
+    #    Ys = [exp(Xs[k].dot(Bs[k])) + random.normal(0, sigma, (Ns[k], 1)) >= 1 for k in range(K)]
+    #if link == 'raw':
+    #    Ys = [Xs[k].dot(Bs[k]) + random.normal(0, sigma, (Ns[k], 1)) for k in range(K)]
+    return [Xs, Ys, Bs, Bs_idcs]
+ 
+ 
+## ___evaluation:___
+def auc_calc(X, Y):
+    """Calculates AUC of ROC curve (q=1)."""
+    roc_cv = roc_curve(Y[:, 0], X[:, 0])
+    return auc(roc_cv[0], roc_cv[1])
+ 
+def intg_rankings(ws_, top_n, wh_rnk=1):
+    "Integrative rankings."
+    ## [[sep, ... sep], ..., [jnt]]
+    K = len(ws_)
+    p = shape(ws_[0])[0]
+    if type(top_n) != list: top_n = [top_n]*2
+    #indiv_rankings = [rankdata(-abs(ws_[k][:, wh_rnk - 1])) for k in range(K)]
+    indiv_values = [abs(ws_[k][:, wh_rnk - 1]) for k in range(K)]
+    comm_rankings = argsort([-gmean([indiv_values[k][v] for k in range(K)])
+        for v in range(p)])[:top_n[1]]
+    dstc_rankings = [argsort([-(indiv_values[k][v] - gmean([indiv_values[k_][v]
+        for k_ in range(K) if k_ != k])) for v in range(p)])[:top_n[0]] for k in range(K)]
+    return dstc_rankings, [comm_rankings]
+ 
+def num_common(var_set, idx_set):
+    "Computes number of common variables (takes sets of variables and indices)."
+    #print 'var_set', var_set
+    #print 'idx_set', idx_set
+    n_grps = len(var_set)
+    values = zeros((n_grps, n_grps))
+    for g1 in range(n_grps):
+        for g2 in range(n_grps):
+            values[g1, g2] = sum([var_set[g1][i] in idx_set[g2] for i in
+                range(len(var_set[g1]))])
+    if n_grps > 1:
+        idcs_ = Hung_alg(values)
+        order = argsort(array(idcs_[0]))
+        idcs = [[idcs_[0][i] for i in order], [idcs_[1][i] for i in order]]
+    else: idcs = [[0], [0]]
+    return [values[idcs[0][g], idcs[1][g]] for g in range(n_grps)]
+ 
+def Hung_alg(mat):
+    "Hungarian algorithm, finds maximum indices."
+    dim = shape(mat)[0]
+    mat = (mat.T - amax(mat, 1).T).T
+    rand_i = []
+    while len(rand_i) != dim:
+        max_idcs = []  ## max indices
+        for i in range(dim):
+            row_max = max(mat[i, :])
+            max_cols = argwhere(mat[i, :] == row_max)
+            for j in max_cols:
+                max_idcs.append((i, j[0]))
+        #print "max_ids", max_idcs
+         
+        rand_i = []  ## random assignment
+        rand_j = []
+        for idx in random.permutation(max_idcs):
+            if idx[0] not in rand_i and idx[1] not in rand_j:
+                rand_i.append(idx[0])
+                rand_j.append(idx[1])
+        #print "assg", rand_i, rand_j
+         
+        mark_i = []  ## markings
+        mark_j = []
+        for i in range(dim):
+            if i not in rand_i: mark_i.append(i)
+        #print "mk1", mark_i
+        added = 1
+        while added > 0:
+            added = 0
+            for i in mark_i:
+                for j in range(dim):
+                    if (i, j) in max_idcs and j not in mark_j:
+                        mark_j.append(j)
+                        added += 1
+            for j in mark_j:
+                for i in range(dim):
+                    if i in rand_i and j == rand_j[rand_i.index(i)] and i not in mark_i:
+                        mark_i.append(i)
+                        added += 1
+        #print "mkd", mark_i, mark_j
+        left = []  ## indices left
+        for i in range(dim):
+            for j in range(dim):
+                if j not in mark_j and i in mark_i: left.append((i, j))
+        if len(left) > 0: highest = max([mat[idx[0], idx[1]] for idx in
+            left])
+        else: highest = 0
+        #print "lft", left, highest
+         
+        for idx in left: mat[idx[0], idx[1]] -= highest  ## adjust
+        for j in mark_j:
+            for i in range(dim):
+                if i not in mark_i: mat[i, j] += highest
+        #print len(rand_i), len(rand_j)
+    return rand_i, rand_j
+
